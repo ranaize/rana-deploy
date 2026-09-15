@@ -33,9 +33,11 @@ services:
   rana-socketd:
     build: ../../rana-socket
     container_name: rana-socketd
-    networks: [rana_server_net]
+    networks:
+      rana_server_net:
+        ipv4_address: 172.28.0.11
     ports:
-      - "9000:9000"                  # the ONLY published port
+      - "9000"
     environment:
       - RANA_CONFIG=/etc/rana/rana-socket.toml
       - ASK_LLM_URL=http://localai:8080

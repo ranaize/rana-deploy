@@ -12,10 +12,10 @@
 #   make sync-config  Seed config/ from rana-socket templates (no .template); existing kept
 #   make clean    Remove the copied client from the agent build context
 #
-# Config templates live in the sibling rana-socket/ repo as client.template.toml /
-# server.template.toml. `make sync-config` (run automatically by `server`/`client`)
-# seeds config/client.toml / config/server.toml the first time only — existing
-# runtime configs are never overwritten. They are gitignored.
+# Config templates live in the sibling rana-socket/ repo under config/
+# (client.template.toml / server.template.toml). `make sync-config` (run
+# automatically by `server`/`client`) seeds config/client.toml / config/server.toml
+# the first time only — existing runtime configs are never overwritten. Gitignored.
 
 SERVER_COMPOSE := docker compose -f compose/docker-compose.server.yaml
 CLIENT_COMPOSE := docker compose -f compose/docker-compose.client.yaml
@@ -55,20 +55,20 @@ sync-client:
 # delete the config first. Safe to run repeatedly.
 sync-config:
 	mkdir -p config
-	[ -f config/client.toml ] || cp ../rana-socket/client.template.toml config/client.toml
-	[ -f config/server.toml ] || cp ../rana-socket/server.template.toml config/server.toml
+	[ -f config/client.toml ] || cp ../rana-socket/config/client.template.toml config/client.toml
+	[ -f config/server.toml ] || cp ../rana-socket/config/server.template.toml config/server.toml
 	@echo "rana-deploy: config/ seeded from rana-socket templates (existing configs kept)"
 
 # server: ensure config, build + up the tower (detached), follow logs; ctrl-c takes it down.
 server: sync-config
 	$(SERVER_COMPOSE) up -d --build
-	@trap '$(SERVER_COMPOSE) down; exit 130' INT TERM; $(SERVER_COMPOSE) logs -f
+	@trap '$(SERVER_COMPOSE) down; exit 0' INT TERM; $(SERVER_COMPOSE) logs -f
 
 # client: ensure shared socket dir + agent dep + config, build + up the notebook
 # (detached), follow logs; ctrl-c takes it down.
 client: $(RUN_SOCK_DIR) sync-client sync-config
 	$(CLIENT_COMPOSE) up -d --build
-	@trap '$(CLIENT_COMPOSE) down; exit 130' INT TERM; $(CLIENT_COMPOSE) logs -f
+	@trap '$(CLIENT_COMPOSE) down; exit 0' INT TERM; $(CLIENT_COMPOSE) logs -f
 
 $(RUN_SOCK_DIR):
 	mkdir -p $(RUN_SOCK_DIR)

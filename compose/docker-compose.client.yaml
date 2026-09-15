@@ -32,6 +32,10 @@ services:
     user: "1000:1000"
     group_add:
       - "984"
+    # Reach the remote STT/LLM tower (server stack) at host.docker.internal:9000.
+    # The server stack publishes 9000 to the host; the host gateway maps to it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Host PulseAudio socket for mic capture (read-only).
       - /run/user/1000:/run/user/1000:ro
