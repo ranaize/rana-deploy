@@ -1,0 +1,5 @@
+# Shared UDS bind mount created by `make client` (rana-client-daemon <-> agent).
+run/
+
+# Generated runtime configs (materialized from rana-socket templates via `make sync-config`).
+config/

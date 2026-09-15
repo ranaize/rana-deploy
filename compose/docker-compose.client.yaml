@@ -1,0 +1,48 @@
+# rana-deploy — CLIENT (notebook) stack.
+# Brings up the notebook-side rana-socketd (client.toml, unix socket) and the
+# rana-voice-agent container that forwards audio to it over the shared UDS at
+# /run/rana/rana-local.sock. The UDS lives on the `run/rana` host bind mount
+# (created by `make client`) so both containers can reach it.
+#
+# Build contexts: ../../rana-socket (daemon) and ../../rana-voice-agent (agent).
+# The agent dep (rana-socket-client) is copied into the agent build context by
+# `make sync-client`, which `make client` runs automatically.
+# Bring up with:  make client   (from rana-deploy/)
+
+services:
+  rana-client-daemon:
+    build: ../../rana-socket
+    container_name: rana-client-daemon
+    # Runs as uid 1000 (same as the agent) so the 0o600 UDS it creates in
+    # run/rana is connectable by the agent.
+    user: "1000:1000"
+    group_add:
+      - "984"
+    volumes:
+      - ../config/client.toml:/etc/rana/client.toml:ro
+      - ../run/rana:/run/rana
+    command: ["/etc/rana/client.toml"]
+    restart: unless-stopped
+
+  rana-voice-agent:
+    build:
+      context: ../../rana-voice-agent
+      dockerfile: images/runtime.Dockerfile
+    container_name: rana-voice-agent
+    user: "1000:1000"
+    group_add:
+      - "984"
+    volumes:
+      # Host PulseAudio socket for mic capture (read-only).
+      - /run/user/1000:/run/user/1000:ro
+      # Trained wake-word + openWakeWord resources (sibling repo).
+      - ../../rana-voice-models/models:/app/models
+      - ../../rana-voice-models/.oww-models:/usr/local/lib/python3.11/site-packages/openwakeword/resources/models
+      # Shared UDS with the notebook daemon.
+      - ../run/rana:/run/rana
+    environment:
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - XDG_RUNTIME_DIR=/run/user/1000
+    depends_on:
+      - rana-client-daemon
+    restart: unless-stopped

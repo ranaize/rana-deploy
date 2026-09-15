@@ -1,0 +1,60 @@
+# rana-deploy — SERVER (tower) stack.
+# One published port (9000): the rana-socketd door. LocalAI (8080) stays on the
+# internal rana_server_net bridge and is reachable only from rana-socketd, which
+# is the only component allowed to call it (the `ask` hop).
+#
+# Builds the rana-socketd image from the sibling ../../rana-socket repo.
+# Bring up with:  make server   (from rana-deploy/)
+#
+# Requires the sibling repos:
+#   ../../rana-voice-backend  LocalAI model config (config/command.yaml) + model binary (models/)
+#   ../rana-socket      `build:` context for the rana-socketd image
+
+services:
+  localai:
+    image: localai/localai:latest-cpu
+    container_name: localai_server
+    networks:
+      rana_server_net:
+        ipv4_address: 172.28.0.10
+    expose:
+      - "8080"                       # bridge-internal only; single door stays 9000
+    environment:
+      - GALLS=true
+      - DEFAULT_MODEL_TIMEOUT=30m
+      - THREADS=4
+      - MODELS_PATH=/build/models
+    volumes:
+      - ../../rana-voice-backend/config:/build/models:cached
+      - ../../rana-voice-backend/models:/build/models/bins:cached
+    command: ["run"]
+    restart: unless-stopped
+
+  rana-socketd:
+    build: ../../rana-socket
+    container_name: rana-socketd
+    networks: [rana_server_net]
+    ports:
+      - "9000:9000"                  # the ONLY published port
+    environment:
+      - RANA_CONFIG=/etc/rana/rana-socket.toml
+      - ASK_LLM_URL=http://localai:8080
+    volumes:
+      - ../config/server.toml:/etc/rana/rana-socket.toml:ro
+    depends_on:
+      localai:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo -n | curl -s -o /dev/null telnet://127.0.0.1:9000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  rana_server_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
