@@ -1,29 +1,13 @@
 # rana-deploy — CLIENT (notebook) stack.
-# Brings up the notebook-side rana-socketd (client.toml, unix socket) and the
-# rana-voice-agent container that forwards audio to it over the shared UDS at
-# /run/rana/rana-local.sock. The UDS lives on the `run/rana` host bind mount
-# (created by `make client`) so both containers can reach it.
+# The rana-voice-agent runs in docker; the notebook-side rana-socketd daemon (the
+# "socket") is run NATIVELY on the host by `make client` (see rana-deploy/Makefile).
+# The host daemon listens on the unix socket at run/rana/rana-local.sock (a host dir
+# bind-mounted here at /run/rana) that the agent forwards audio to. Running the
+# daemon on the host lets it actually reach host resources (xdg-open, lights, etc.).
 #
-# Build contexts: ../../rana-socket (daemon) and ../../rana-voice-agent (agent).
-# The agent dep (rana-socket-client) is copied into the agent build context by
-# `make sync-client`, which `make client` runs automatically.
 # Bring up with:  make client   (from rana-deploy/)
 
 services:
-  rana-client-daemon:
-    build: ../../rana-socket
-    container_name: rana-client-daemon
-    # Runs as uid 1000 (same as the agent) so the 0o600 UDS it creates in
-    # run/rana is connectable by the agent.
-    user: "1000:1000"
-    group_add:
-      - "984"
-    volumes:
-      - ../config/client.toml:/etc/rana/client.toml:ro
-      - ../run/rana:/run/rana
-    command: ["/etc/rana/client.toml"]
-    restart: unless-stopped
-
   rana-voice-agent:
     build:
       context: ../../rana-voice-agent
@@ -33,7 +17,7 @@ services:
     group_add:
       - "984"
     # Reach the remote STT/LLM tower (server stack) at host.docker.internal:9000.
-    # The server stack publishes 9000 to the host; the host gateway maps to it.
+    # The server stack's host daemon listens on :9000 on the host gateway.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -42,11 +26,9 @@ services:
       # Trained wake-word + openWakeWord resources (sibling repo).
       - ../../rana-voice-models/models:/app/models
       - ../../rana-voice-models/.oww-models:/usr/local/lib/python3.11/site-packages/openwakeword/resources/models
-      # Shared UDS with the notebook daemon.
+      # Shared UDS with the host-side notebook daemon (run/rana on the host).
       - ../run/rana:/run/rana
     environment:
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
       - XDG_RUNTIME_DIR=/run/user/1000
-    depends_on:
-      - rana-client-daemon
     restart: unless-stopped
