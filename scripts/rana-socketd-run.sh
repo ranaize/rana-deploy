@@ -7,8 +7,8 @@
 # host-published 8080. The services (LocalAI, the voice agent) stay in compose.
 #
 # Subcommands (invoked by the rana-deploy Makefile):
-#   start   <role> <config> [ask-url]   launch the daemon; logs to run/socket/<role>.log
-#   stop    <role>                       stop the daemon (kill its pidfile)
+#   start   <role> <config>         launch the daemon; logs to run/socket/<role>.log
+#   stop    <role>                  stop the daemon (kill its pidfile)
 #   status                              show which daemons are running
 set -euo pipefail
 
@@ -20,25 +20,22 @@ SOCK_BIN="${RANA_SOCK_BIN:-$(command -v rana-socketd 2>/dev/null || echo /usr/lo
 LOG_DIR="$ROOT/run/socket"
 RUN_UID=1000
 
-cmd="${1:-}"; role="${2:-}"; cfg="${3:-}"; ask_url="${4:-}"
+cmd="${1:-}"; role="${2:-}"; cfg="${3:-}"
 
 mkdir -p "$LOG_DIR"
 
 start() {
-    local role="$1" cfg="$2" ask_url="${3:-}"
+    local role="$1" cfg="$2"
     [ -x "$SOCK_BIN" ] || { echo "error: $SOCK_BIN missing — run 'make socket' first" >&2; exit 1; }
     if [ -f "$LOG_DIR/$role.pid" ] && kill -0 "$(cat "$LOG_DIR/$role.pid")" 2>/dev/null; then
         echo "rana-socketd ($role) already running (pid $(cat "$LOG_DIR/$role.pid"))"
         return 0
     fi
     cd "$ROOT"
-    local prefix=() envs=()
-    # Put the daemon's own directory on PATH so the hop scripts copied next to the
-    # binary (rana-ask.sh / rana-stt.sh / …) are resolvable by basename — we no
-    # longer `predep install` them to /usr/local/bin. The daemon passes this PATH
-    # through to the scripts it spawns.
+    local prefix=()
+    # Keep the daemon's own directory on PATH for spawned scripts (harmless now
+    # that the LLM/STT hops are in-process .pluto scripts).
     export PATH="$(dirname "$SOCK_BIN")${PATH:+:$PATH}"
-    [ -n "$ask_url" ] && envs=(env "ASK_LLM_URL=$ask_url")
     # Drop to the unprivileged uid so the unix socket it creates is owned by that
     # user — the agent container runs as the same uid and connects to it.
     if [ "$(id -u)" -eq 0 ] && id -u "$RUN_UID" >/dev/null 2>&1; then
@@ -49,7 +46,7 @@ start() {
             echo "warning: setpriv unavailable; running as root — the notebook UDS may not be connectable by the agent (uid $RUN_UID)" >&2
         fi
     fi
-    nohup "${prefix[@]}" "${envs[@]}" "$SOCK_BIN" "$cfg" > "$LOG_DIR/$role.log" 2>&1 &
+    nohup "${prefix[@]}" "$SOCK_BIN" "$cfg" > "$LOG_DIR/$role.log" 2>&1 &
     echo $! > "$LOG_DIR/$role.pid"
     echo "rana-socketd ($role) started pid $(cat "$LOG_DIR/$role.pid"); log: $LOG_DIR/$role.log"
 }
@@ -76,7 +73,7 @@ status() {
 }
 
 case "$cmd" in
-    start)  [ -n "$role" ] && [ -n "$cfg" ] || { echo "usage: $0 start <role> <config> [ask-url]" >&2; exit 2; }; start "$role" "$cfg" "$ask_url" ;;
+    start)  [ -n "$role" ] && [ -n "$cfg" ] || { echo "usage: $0 start <role> <config>" >&2; exit 2; }; start "$role" "$cfg" ;;
     stop)   [ -n "$role" ] || { echo "usage: $0 stop <role>" >&2; exit 2; }; stop "$role" ;;
     status) status ;;
     *) echo "usage: $0 {start|stop|status} [args]" >&2; exit 2 ;;

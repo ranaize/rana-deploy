@@ -7,12 +7,15 @@
 # daemon + its hop scripts from the sibling rana-socket repo IN-PLACE (never
 # installs to /usr/local/bin — `predep` builds only); `make server` / `make client`
 # bring up the compose services and launch the matching host daemon from the build
-# folder, following both logs. ctrl-c takes it all down.
+# folder, following both logs. ctrl-c takes it all down. server/client also
+# SUPERVISE the pair: if the host daemon or its compose service dies, the peer is
+# cancelled automatically (a daemon that fails at startup - e.g. a missing shared
+# lib - tears the compose service down with it, and vice versa).
 #
 #   make server   Build the socket in-place, up LocalAI (docker), launch the tower
-#                 daemon on the host, follow logs (ctrl-c stops everything)
+#                 daemon on the host, follow logs (ctrl-c or a peer failure stops everything)
 #   make client   Sync agent dep + config, up the agent (docker), launch the
-#                 notebook daemon on the host, follow logs (ctrl-c stops everything)
+#                 notebook daemon on the host, follow logs (ctrl-c or a peer failure stops everything)
 #   make socket   Build the rana-socketd runtime in-place (predep build; no install)
 #   make down     Stop the host daemons AND the compose services (both roles)
 #   make ps       Show running containers + host daemons (both roles)
@@ -34,12 +37,17 @@ CLIENT_COMPOSE := docker compose -f compose/docker-compose.client.yaml
 # (e.g. after editing the agent/Dockerfile), or use `make build` / `make rebuild`.
 UP_FLAGS ?= -d
 
-# rana-socket sibling repo — build context for the rana-socketd docker image.
+# rana-socket sibling repo — native build source. The daemon is built in-place on
+# the host (never in docker); gen-schema copies its flatc-generated python out.
 # `?=` would be overridden by an empty env var (`export RANA_SOCKET_SRC=`), so use
 # $(or ...) to fall back to the default whenever the value is empty/undefined.
 # These must be defined BEFORE GEN_FBS/GEN_PY below, since those use `:=` (immediate
 # expansion) and would otherwise capture the empty pre-default value.
 RANA_SOCKET_SRC := $(or $(RANA_SOCKET_SRC),../rana-socket)
+# Scripts folder (init.lua + *.pluto) for the NATIVE host daemon. Exported so the
+# daemon launched by `make server`/`make client` finds them explicitly via
+# $RANA_SCRIPTS_DIR (autodiscovery by walking up from the binary also works).
+export RANA_SCRIPTS_DIR := $(abspath $(RANA_SOCKET_SRC)/scripts)
 # rana-socket client package copied into the agent build context (../rana-voice-agent)
 # so the agent image can pip-install it (see rana-voice-agent/AGENTS.md).
 RANA_SOCKET_CLIENT_SRC := $(or $(RANA_SOCKET_CLIENT_SRC),../rana-socket/client/py)
@@ -71,7 +79,7 @@ help:
 	@echo "  make ps         Show running containers + host daemons"
 	@echo "  make logs       Follow logs for running services + daemons"
 	@echo "  make sync-client   Copy the sibling rana-socket client into the agent build ctx"
-	@echo "  make gen-schema    Re-extract FlatBuffers python from the daemon image (skips if up to date)"
+	@echo "  make gen-schema    Copy the host-built FlatBuffers python into the agent client"
 	@echo "  make sync-config   Seed config/ from rana-socket templates (existing kept)"
 	@echo "  make clean         Remove the copied client from the agent build ctx"
 	@echo "  note: pass BUILD=1 to server/client to force a compose image rebuild (default reuses images)"
@@ -95,23 +103,18 @@ sync-config:
 
 # Build the rana-socketd runtime. Two paths, depending on whether `predep` is
 # reachable:
-#   - predep on PATH        -> `predep install` builds + installs the daemon, the
-#                              serializer CLI, and the hop scripts to /usr/local/bin
-#                              (auto-sudo'ing + chown'ing as needed). The daemon
-#                              configs already point at /usr/local/bin/*, so no path
-#                              edits are required.
+#   - predep on PATH        -> `predep install` builds + installs the daemon to
+#                              /usr/local/bin (auto-sudo'ing + chown'ing as needed).
 #   - predep NOT on PATH    -> build in-place via a local predep (./predep inside
 #                              the rana-socket dir) and run from the build folder.
-#                              Nothing is installed. The hop scripts are copied next
-#                              to the built binary so a build-folder daemon works
-#                              out of the box; launch it with RANA_SOCK_BIN set
-#                              (see the printed line). The daemon configs still point
-#                              at /usr/local/bin/*, so for full local operation copy
-#                              them and rewrite the script paths to the build folder.
+#                              The daemon self-discovers the source scripts/ folder
+#                              (RANA_SCRIPTS_DIR or walking up from the binary);
+#                              launch it with RANA_SOCK_BIN set (see the printed
+#                              line).
 # Build the rana-socketd runtime in-place — never `predep install` (no /usr/local/bin
 # writes). Two paths, both gated on whether `predep` is reachable:
-#   - predep on PATH   -> `predep` builds the daemon/serializer into
-#                         socket/bin/Release/ (and we copy the hop scripts alongside).
+#   - predep on PATH   -> `predep` builds the daemon into
+#                         socket/bin/Release/ (we then copy the scripts alongside).
 #   - predep NOT on PATH -> `./predep build` in-place; same build-folder result.
 # The daemon is then launched from that build folder (see SOCK_BIN / server / client).
 socket:
@@ -128,52 +131,60 @@ socket:
 		echo "rana-deploy: predep not on PATH — building in-place (no install)…"; \
 		./predep build || { echo "rana-deploy: ERROR: in-place predep build failed"; exit 1; }; \
 	fi; \
-	cp -f scripts/rana-*.sh scripts/*.py serializer/bin/Release/rana-serializer socket/bin/Release/ 2>/dev/null || true; \
-	chmod +x socket/bin/Release/rana-*.sh socket/bin/Release/*.py socket/bin/Release/rana-serializer 2>/dev/null || true; \
 	SOCK=$$(pwd)/socket/bin/Release/rana-socketd; \
 	echo "rana-deploy: built -> $$SOCK"; \
 	echo "rana-deploy: launch with: RANA_SOCK_BIN=$$SOCK $(CURDIR)/scripts/rana-socketd-run.sh start <role> <config>"
 
-# Re-extract the FlatBuffers Python module the daemon image regenerated from
-# command.fbs, writing it over the agent client's vendored copy. We create a
-# throwaway container from the built image and `docker cp` the file out (no
-# `run`/console involved, which avoids the compose entrypoint-console bug).
-# Skip entirely when the extracted module is already newer than command.fbs, so a
-# `make client` no longer triggers a docker extraction (or a daemon-image build)
-# on every invocation.
-gen-schema:
-	@if [ -f $(GEN_PY) ] && [ ! "$(GEN_FBS)" -nt "$(GEN_PY)" ]; then \
-		echo "rana-deploy: client schema up to date ($(GEN_PY)) — skipping docker extraction"; \
-	else \
-		docker rm -f rana-schema-export >/dev/null 2>&1 || true; \
-		if ! docker create --name rana-schema-export rana-socketd >/dev/null 2>&1; then \
-			docker build -t rana-socketd $(RANA_SOCKET_SRC) || { echo "rana-deploy: ERROR: rana-socketd image build failed"; exit 1; }; \
-			docker create --name rana-schema-export rana-socketd || { echo "rana-deploy: ERROR: could not create schema-export container"; exit 1; }; \
-		fi; \
-		mkdir -p $(dir $(GEN_PY)); \
-		docker cp rana-schema-export:/opt/rana/client_command_generated.py $(GEN_PY) || { echo "rana-deploy: ERROR: schema export (docker cp) failed"; exit 1; }; \
-		docker rm -f rana-schema-export >/dev/null 2>&1 || true; \
-		echo "rana-deploy: client schema synced from rana-socketd image -> $(GEN_PY)"; \
-	fi
+# Copy the FlatBuffers Python module straight out of the HOST build tree — the
+# daemon's premake5 prebuild (gen_schema_daemon) already regenerates
+# schema/generated/command_generated.py from command.fbs via flatc during
+# `make socket` (dependency below), so no docker image / throwaway container is
+# involved and the container's stopped, rootless daemon build can't break it.
+# The Python client and the daemon MUST be compiled from the same command.fbs; the
+# copy runs unconditionally (cheap: flatc + a file copy) so a stale module never
+# serves the agent an old schema — which produced "malformed flatbuffer" on every
+# Command while the daemon was rebuilt against a new command.fbs.
+gen-schema: socket
+	@mkdir -p $(dir $(GEN_PY))
+	@cp -f $(RANA_SOCKET_SRC)/schema/generated/command_generated.py $(GEN_PY) || { echo "rana-deploy: ERROR: schema export (host copy) failed"; exit 1; }
+	@echo "rana-deploy: client schema synced from host build -> $(GEN_PY)"
 
 # server: ensure config + socket, up LocalAI (docker), launch the tower daemon on
 # the host, follow logs; ctrl-c stops the daemon + takes the compose stack down.
 server: sync-config socket
 	$(SERVER_COMPOSE) up $(UP_FLAGS) || { echo "rana-deploy: ERROR: server compose up failed"; exit 1; }
-	@RANA_SOCK_BIN=$(SOCK_BIN) ./scripts/rana-socketd-run.sh start server $(CURDIR)/config/server.toml http://127.0.0.1:8080
-	@$(SERVER_COMPOSE) logs -f > run/socket/server.docker.log 2>&1 & LOGPID=$$!; trap 'kill $$LOGPID 2>/dev/null; $(SERVER_COMPOSE) down 2>/dev/null; ./scripts/rana-socketd-run.sh stop server; exit 0' INT TERM; echo "following logs (ctrl-c stops the stack): daemon -> run/socket/server.log"; tail -f run/socket/server.log run/socket/server.docker.log 2>/dev/null
+	@RANA_SOCK_BIN=$(SOCK_BIN) ./scripts/rana-socketd-run.sh start server $(CURDIR)/config/server.toml; \
+	$(SERVER_COMPOSE) logs -f > run/socket/server.docker.log 2>&1 & LOGPID=$$!; \
+	tail -f run/socket/server.log run/socket/server.docker.log 2>/dev/null & TAILPID=$$!; \
+	trap 'kill $$LOGPID $$TAILPID 2>/dev/null; $(SERVER_COMPOSE) down 2>/dev/null; ./scripts/rana-socketd-run.sh stop server; exit 0' INT TERM; \
+	DPID=$$(cat run/socket/server.pid 2>/dev/null || echo -1); \
+	echo "following logs (supervising: if the daemon or the stack dies, the peer is cancelled): daemon -> run/socket/server.log"; \
+	while [ "$$DPID" != "-1" ] && kill -0 "$$DPID" 2>/dev/null && [ -n "$$($(SERVER_COMPOSE) ps -q localai 2>/dev/null)" ]; do sleep 2; done; \
+	echo "rana-deploy: socket/stack peer failure detected - cancelling the other side"; \
+	kill $$LOGPID $$TAILPID 2>/dev/null; \
+	$(SERVER_COMPOSE) down 2>/dev/null; \
+	./scripts/rana-socketd-run.sh stop server 2>/dev/null; true
 
 # client: sync agent dep + config, up the agent (docker), launch the notebook
 # daemon on the host, follow logs; ctrl-c stops the daemon + takes the stack down.
 #
-# gen-schema (pulled in via sync-client's dependency) extracts the FlatBuffers
-# Python module the daemon build regenerated from command.fbs, so the agent ships
-# the exact schema the daemon compiled against — keeping union ordinals / status
-# codes in lockstep.
+# gen-schema (pulled in via sync-client's dependency) copies the FlatBuffers
+# Python module the host daemon build regenerated from command.fbs, so the agent
+# ships the exact schema the daemon compiled against — keeping union ordinals /
+# status codes in lockstep.
 client: $(RUN_SOCK_DIR) socket sync-client sync-config
 	$(CLIENT_COMPOSE) up $(UP_FLAGS) || { echo "rana-deploy: ERROR: client compose up failed"; exit 1; }
-	@RANA_SOCK_BIN=$(SOCK_BIN) ./scripts/rana-socketd-run.sh start client $(CURDIR)/config/client.toml
-	@$(CLIENT_COMPOSE) logs -f > run/socket/client.docker.log 2>&1 & LOGPID=$$!; trap 'kill $$LOGPID 2>/dev/null; $(CLIENT_COMPOSE) down 2>/dev/null; ./scripts/rana-socketd-run.sh stop client; exit 0' INT TERM; echo "following logs (ctrl-c stops the stack): daemon -> run/socket/client.log"; tail -f run/socket/client.log run/socket/client.docker.log 2>/dev/null
+	@RANA_SOCK_BIN=$(SOCK_BIN) ./scripts/rana-socketd-run.sh start client $(CURDIR)/config/client.toml; \
+	$(CLIENT_COMPOSE) logs -f > run/socket/client.docker.log 2>&1 & LOGPID=$$!; \
+	tail -f run/socket/client.log run/socket/client.docker.log 2>/dev/null & TAILPID=$$!; \
+	trap 'kill $$LOGPID $$TAILPID 2>/dev/null; $(CLIENT_COMPOSE) down 2>/dev/null; ./scripts/rana-socketd-run.sh stop client; exit 0' INT TERM; \
+	DPID=$$(cat run/socket/client.pid 2>/dev/null || echo -1); \
+	echo "following logs (supervising: if the daemon or the stack dies, the peer is cancelled): daemon -> run/socket/client.log"; \
+	while [ "$$DPID" != "-1" ] && kill -0 "$$DPID" 2>/dev/null && [ -n "$$($(CLIENT_COMPOSE) ps -q rana-voice-agent 2>/dev/null)" ]; do sleep 2; done; \
+	echo "rana-deploy: socket/stack peer failure detected - cancelling the other side"; \
+	kill $$LOGPID $$TAILPID 2>/dev/null; \
+	$(CLIENT_COMPOSE) down 2>/dev/null; \
+	./scripts/rana-socketd-run.sh stop client 2>/dev/null; true
 
 # Explicit image builds (only when you actually changed an image's sources).
 build:

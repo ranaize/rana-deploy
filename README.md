@@ -97,4 +97,9 @@ consumer ──typed Command frame──▶ rana-socketd :9000
 
 The notebook client forwards to its local `rana-socketd` (client.toml, unix
 socket); the server `rana-socketd` (server.toml, TCP 9000) is the only component
-that reaches LocalAI. See the root `PLAN.md` for the full task breakdown (Tasks 1–7).
+that reaches LocalAI. Both roles share one generic `Command{key,action,target,params,data}`
+envelope and a `scripts/` folder — `[commands.allowed]` picks which scripts each
+role exposes (server: ask/talk/power/mc_server/lookup_machine; client: the device
+commands like speak/browser/lights). Voice runs server-side as `talk → stt → ask`
+pipeline hops; device intents the server does not own are forwarded back to the
+client daemon.

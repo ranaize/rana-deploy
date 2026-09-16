@@ -23,9 +23,12 @@ services:
     volumes:
       # Host PulseAudio socket for mic capture (read-only).
       - /run/user/1000:/run/user/1000:ro
-      # Trained wake-word + openWakeWord resources (sibling repo).
+      # Trained wake-word + openWakeWord resources (sibling repo). The oww
+      # resources mount is read-only and must target the venv site-packages
+      # (openwakeword is installed into /app/.venv since the image builds
+      # sudoless — the old /usr/local/... system-path mount no longer exists).
       - ../../rana-voice-models/models:/app/models
-      - ../../rana-voice-models/.oww-models:/usr/local/lib/python3.11/site-packages/openwakeword/resources/models
+      - ../../rana-voice-models/.oww-models:/app/.venv/lib/python3.11/site-packages/openwakeword/resources/models:ro
       # Shared UDS with the host-side notebook daemon (run/rana on the host).
       - ../run/rana:/run/rana
     environment:
