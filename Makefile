@@ -31,7 +31,7 @@ RUN_SOCK_DIR := run/rana
 
 .DEFAULT_GOAL := help
 
-.PHONY: help server client down ps logs sync-client sync-config clean
+.PHONY: help server client down ps logs sync-client sync-config gen-schema clean
 
 help:
 	@echo "rana-deploy — available targets:"
@@ -41,13 +41,16 @@ help:
 	@echo "  make ps            Show running containers"
 	@echo "  make logs          Follow logs for running services"
 	@echo "  make sync-client   Copy the sibling rana-socket client into the agent build ctx"
+	@echo "  make gen-schema    Re-extract FlatBuffers python from the daemon image (schema lockstep)"
 	@echo "  make sync-config   Seed config/ from rana-socket templates (existing kept)"
 	@echo "  make clean         Remove the copied client from the agent build ctx"
 
 # Copy only the Python package (py/) into the agent build context, but only when
 # its contents actually change. We hash every source file (not just a touch
 # sentinel) so any edit to the vendored client forces a re-copy on the next build.
-sync-client:
+# Depends on gen-schema so the regenerated FlatBuffers module is always present
+# (never rely on a committed/stale copy).
+sync-client: gen-schema
 	@H=$$(find $(RANA_SOCKET_CLIENT_SRC) -type f -print0 | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1); if [ ! -f $(RANA_SOCKET_CLIENT_DST)/.hash ] || [ "$$H" != "$$(cat $(RANA_SOCKET_CLIENT_DST)/.hash 2>/dev/null)" ]; then rm -rf $(RANA_SOCKET_CLIENT_DST); mkdir -p $(RANA_SOCKET_CLIENT_DST); cp -r $(RANA_SOCKET_CLIENT_SRC)/. $(RANA_SOCKET_CLIENT_DST)/; echo "$$H" > $(RANA_SOCKET_CLIENT_DST)/.hash; echo "rana-socket-client synced ($(RANA_SOCKET_CLIENT_SRC) -> $(RANA_SOCKET_CLIENT_DST))"; else echo "rana-socket-client up to date"; fi
 
 # Seed the runtime configs from the rana-socket templates (sibling repo), stripping
@@ -59,6 +62,20 @@ sync-config:
 	[ -f config/server.toml ] || cp ../rana-socket/config/server.template.toml config/server.toml
 	@echo "rana-deploy: config/ seeded from rana-socket templates (existing configs kept)"
 
+# Re-extract the FlatBuffers Python module the daemon image regenerated from
+# command.fbs, writing it over the agent client's vendored copy. We create a
+# throwaway container from the built image and `docker cp` the file out (no
+# `run`/console involved, which avoids the compose entrypoint-console bug).
+gen-schema:
+	@docker rm -f rana-schema-export >/dev/null 2>&1 || true
+	@if ! docker create --name rana-schema-export rana-socketd >/dev/null 2>&1; then \
+		$(SERVER_COMPOSE) build rana-socketd >/dev/null 2>&1 && \
+		docker create --name rana-schema-export rana-socketd >/dev/null 2>&1; \
+	fi
+	docker cp rana-schema-export:/opt/rana/client_command_generated.py $(RANA_SOCKET_CLIENT_SRC)/rana_socket/command_generated.py
+	docker rm -f rana-schema-export >/dev/null 2>&1 || true
+	@echo "rana-deploy: client schema synced from rana-socketd image -> $(RANA_SOCKET_CLIENT_SRC)/rana_socket/command_generated.py"
+
 # server: ensure config, build + up the tower (detached), follow logs; ctrl-c takes it down.
 server: sync-config
 	$(SERVER_COMPOSE) up -d --build
@@ -66,6 +83,11 @@ server: sync-config
 
 # client: ensure shared socket dir + agent dep + config, build + up the notebook
 # (detached), follow logs; ctrl-c takes it down.
+#
+# gen-schema (pulled in via sync-client's dependency) extracts the FlatBuffers
+# Python module that the daemon build regenerated from command.fbs, so the agent
+# ships the exact schema the daemon compiled against — keeping union ordinals /
+# status codes in lockstep.
 client: $(RUN_SOCK_DIR) sync-client sync-config
 	$(CLIENT_COMPOSE) up -d --build
 	@trap '$(CLIENT_COMPOSE) down; exit 0' INT TERM; $(CLIENT_COMPOSE) logs -f

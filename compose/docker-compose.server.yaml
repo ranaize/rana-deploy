@@ -32,6 +32,7 @@ services:
 
   rana-socketd:
     build: ../../rana-socket
+    image: rana-socketd
     container_name: rana-socketd
     networks:
       rana_server_net:
