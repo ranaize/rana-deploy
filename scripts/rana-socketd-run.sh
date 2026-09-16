@@ -13,7 +13,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOCK_BIN="/usr/local/bin/rana-socketd"
+# Resolve the daemon via PATH so the installed (/usr/local/bin) and the
+# build-folder (added to PATH) binaries both work. Override with RANA_SOCK_BIN
+# when launching an explicit binary path (see `make socket`'s not-installed branch).
+SOCK_BIN="${RANA_SOCK_BIN:-$(command -v rana-socketd 2>/dev/null || echo /usr/local/bin/rana-socketd)}"
 LOG_DIR="$ROOT/run/socket"
 RUN_UID=1000
 
@@ -30,6 +33,11 @@ start() {
     fi
     cd "$ROOT"
     local prefix=() envs=()
+    # Put the daemon's own directory on PATH so the hop scripts copied next to the
+    # binary (rana-ask.sh / rana-stt.sh / …) are resolvable by basename — we no
+    # longer `predep install` them to /usr/local/bin. The daemon passes this PATH
+    # through to the scripts it spawns.
+    export PATH="$(dirname "$SOCK_BIN")${PATH:+:$PATH}"
     [ -n "$ask_url" ] && envs=(env "ASK_LLM_URL=$ask_url")
     # Drop to the unprivileged uid so the unix socket it creates is owned by that
     # user — the agent container runs as the same uid and connects to it.
