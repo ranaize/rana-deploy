@@ -1,6 +1,6 @@
 # rana-deploy — orchestrates both rana roles from one place.
 #
-#   make server   Build & bring up the TOWER (localai + rana-socketd), follow logs
+#   make server   Build & bring up the SERVER (localai + rana-socketd), follow logs
 #                 (ctrl-c stops the stack and takes it down)
 #   make client   Sync the agent dep + config, build & bring up the NOTEBOOK
 #                 (rana-client-daemon + rana-voice-agent), follow logs
@@ -35,7 +35,7 @@ RUN_SOCK_DIR := run/rana
 
 help:
 	@echo "rana-deploy — available targets:"
-	@echo "  make server        Build & up the tower (localai + rana-socketd), follow logs"
+	@echo "  make server        Build & up the server (localai + rana-socketd), follow logs"
 	@echo "  make client        Sync agent dep + config, build & up the notebook, follow logs"
 	@echo "  make down          Stop all running rana services"
 	@echo "  make ps            Show running containers"
@@ -76,7 +76,7 @@ gen-schema:
 	docker rm -f rana-schema-export >/dev/null 2>&1 || true
 	@echo "rana-deploy: client schema synced from rana-socketd image -> $(RANA_SOCKET_CLIENT_SRC)/rana_socket/command_generated.py"
 
-# server: ensure config, build + up the tower (detached), follow logs; ctrl-c takes it down.
+# server: ensure config, build + up the server (detached), follow logs; ctrl-c takes it down.
 server: sync-config
 	$(SERVER_COMPOSE) up -d --build
 	@trap '$(SERVER_COMPOSE) down; exit 0' INT TERM; $(SERVER_COMPOSE) logs -f

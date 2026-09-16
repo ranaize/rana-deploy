@@ -10,18 +10,18 @@ compose file and config; you bring a role up with a single `make` target.
 ```
 rana-deploy/
 ├── compose/
-│   ├── docker-compose.server.yaml   # SERVER (tower): localai + rana-socketd — config/server.toml
+│   ├── docker-compose.server.yaml   # SERVER: localai + rana-socketd — config/server.toml
 │   └── docker-compose.client.yaml   # CLIENT (notebook): rana-client-daemon + rana-voice-agent
 ├── Makefile                    # server / client / down / ps / logs / sync-client / clean
 ├── config/
-│   ├── server.toml             # tower daemon config (was rana-socket.toml)
+│   ├── server.toml             # server daemon config (was rana-socket.toml)
 │   └── client.toml             # notebook daemon config (was notebook_services.toml)
 └── README.md
 ```
 
 `server.toml` and `client.toml` are both `rana-socketd` daemon configs:
 
-- **server.toml** — the tower. `rana-socketd` listens on TCP `:9000`; LocalAI
+- **server.toml** — the server. `rana-socketd` listens on TCP `:9000`; LocalAI
   (8080) is bridge-internal and only reachable from the daemon.
 - **client.toml** — the notebook-side daemon. `rana-socketd` listens on a unix
   socket (`/run/rana/rana-local.sock`, shared via the `run/rana` bind mount)
@@ -44,7 +44,7 @@ rana-deploy/
 ## Bring up a role
 
 ```sh
-make server     # build + up the tower (localai + rana-socketd), follow logs
+make server     # build + up the server (localai + rana-socketd), follow logs
 make client     # sync agent dep, build + up the notebook (daemon + agent), follow logs
 ```
 
@@ -71,5 +71,5 @@ consumer ──typed Command frame──▶ rana-socketd :9000
 ```
 
 The notebook client forwards to its local `rana-socketd` (client.toml, unix
-socket); the tower `rana-socketd` (server.toml, TCP 9000) is the only component
+socket); the server `rana-socketd` (server.toml, TCP 9000) is the only component
 that reaches LocalAI. See the root `PLAN.md` for the full task breakdown (Tasks 1–7).
